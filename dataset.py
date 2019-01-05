@@ -1,5 +1,8 @@
 
 import vocab
+import numpy as np
+
+
 class Dataset(object):
     def __init__(self, train_files, dev_files, test_files, max_p_length, max_q_length):
         self.train_set, self.dev_set, self.test_set = [], [], []
@@ -55,6 +58,36 @@ class Dataset(object):
             for sample in dataset:
                 sample['content'] = vocab.convert_to_ids(sample['content'])
                 sample['question'] = vocab.convert_to_ids(sample['question'])
+
+    def one_batch(self, data, indices, pad_id):
+        batch_data= {
+            'question_ids': [],
+            'content_ids': [],
+            'question_length': [],
+            'content_length': [],
+            'start': [],
+            'end': []
+        }
+        for i in indices:
+            batch_data['question_ids'].append(data[i]['question'])
+            batch_data['question_length'].append(min(len(data[i]['question']), self.max_q_length))
+            batch_data['content_ids'].append(data[i]['content'])
+            batch_data['content_length'].append(min(data[i]['content'], self.max_p_length))
+            if 'span' in data[i]:
+                batch_data['start'].append(int(data[i]['span'][0]))
+                batch_data['end'].append(int(data[i]['span'][1]))
+        return self.padding(batch_data, pad_id)
+
+    def padding(self, batch_data, pad_id):
+        pad_p_length = min(self.max_p_length, max(batch_data['content_length']))
+        pad_q_length = min(self.max_q_length, max(batch_data['question_lenth']))
+
+        batch_data['content_ids'] = [(ids +[pad_id]*(pad_p_length - len(ids)))[:pad_p_length]
+                                     for ids in batch_data['content_ids']]
+        batch_data['question_ids'] = [(ids + [pad_id]*(pad_q_length - len(ids)))[:pad_q_length]
+                                      for ids in batch_data['question_ids']]
+        return batch_data
+
     def get_batches(self, data_name, batch_size, pad_id, shuffle=True):
         if data_name == 'train':
             data = self.train_set
@@ -64,6 +97,11 @@ class Dataset(object):
             data = self.test_set
         else:
             raise NotImplementedError("No {} data".format(data_name))
-
-
+        data_size = len(data)
+        indices = np.arange(data_size)
+        if shuffle:
+            np.random.shuffle(indices)
+        for start_index in np.arange(0, data_size, batch_size):
+            batch_indices = indices[start_index : start_index + batch_size]
+            yield self.one_batch(data, batch_indices, pad_id)
 

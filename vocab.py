@@ -29,7 +29,7 @@ class Vocab(object):
                 self.token_cnt[token] = cnt
 
     def filtered_tokens(self, min_cnt):
-        filtered_tokens = [token for token in self.token2id if self.token_cnt[token] > min_cnt]
+        filtered_tokens = [token for token in self.token2id if self.token_cnt[token] >= min_cnt]
         self.token2id = {}
         self.id2token = {}
         self.add(self.pad_token, cnt=0)
@@ -71,4 +71,10 @@ class Vocab(object):
         for token in self.token2id.keys():
             if token in trained_embeddings:
                 self.embeddings[self.get_id(token)] = trained_embeddings[token]
+
+    def random_init_embeddings(self, embed_dim):
+        self.embed_dim = embed_dim
+        self.embeddings = np.random.rand(self.size(), embed_dim)
+        for token in [self.pad_token, self.unk_token]:
+            self.embeddings[self.get_id(token)] = np.zeros(embed_dim)
 

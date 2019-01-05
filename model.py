@@ -15,6 +15,11 @@ class BiDAFModel(object):
         self.batch_size = args.batch_size
         self.use_dropout = args.dropout_keep_prob < 1
         self.learning_rate = args.learning_rate
+
+        self.max_p_length = args.max_p_len
+        self.max_q_length = args.max_q_len
+        self.max_a_length = args.max_a_len
+
         sess_config = tf.ConfigProto()
         sess_config.gpu_options.allow_growth = True
         self.sess = tf.Session(config=sess_config)
@@ -45,8 +50,8 @@ class BiDAFModel(object):
         self.x_length = tf.placeholder(tf.int32, shape=[None])
         self.q_length = tf.placeholder(tf.int32, shape=[None])
         self.dropout_keep_prob = tf.placeholder(tf.float32)
-        self.y1 = tf.placeholder(tf.int32, shape=[None])
-        self.y2 = tf.placeholder(tf.int32, shape=[None])
+        self.start = tf.placeholder(tf.int32, shape=[None])
+        self.end = tf.placeholder(tf.int32, shape=[None])
 
     def word_embedding(self):
         """
@@ -101,11 +106,45 @@ class BiDAFModel(object):
                 y = tf.one_hot(y, tf.shape(probs)[1], axis=1)
                 loss = - tf.reduce_sum(probs * tf.log(probs), 1)
                 return loss
-        self.start_loss = log_loss(self.p1, self.y1)
-        self.end_loss = log_loss(self.p2, self.y2)
+        self.start_loss = log_loss(self.p1, self.start)
+        self.end_loss = log_loss(self.p2, self.end)
         self.all_params = tf.trainable_variables()
         self.loss = tf.reduce_mean(tf.add(self.start_loss, self.end_loss))
         self.train_op = tf.train.AdamOptimizer(self.learning_rate).minimize(self.loss)
+
+    def train_one_epoch(self, batch_datas, dropout_keep_prob):
+        total_num, total_loss = 0, 0
+        log_every_n_batch, n_batch_loss = 50, 0
+        for bitx, batch in enumerate(batch_datas, 1):
+            feed_dict = {
+                self.x: batch['content_ids'],
+                self.q: batch['question_ids'],
+                self.x_length: batch['content_length'],
+                self.q_length: batch['question_length'],
+                self.start: batch['start'],
+                self.end: batch['end'],
+                self.dropout_keep_prob: dropout_keep_prob
+            }
+            _, loss = self.sess.run([self.train_op, self.loss], feed_dict=feed_dict)
+            total_loss += loss
+            total_num += 1
+            n_batch_loss += loss
+            if log_every_n_batch > 0 and bitx % log_every_n_batch == 0:
+                self.logger.info('Average loss from batch {} to {} is {}'.format(
+                    bitx - log_every_n_batch + 1, bitx, n_batch_loss/log_every_n_batch
+                ))
+                n_batch_loss = 0
+        return 1.0*total_loss/total_num
+
+    def train(self, data, epochs, save_dir, save_prefix, dropout_keep_prob=1.0, evaluate=True):
+        pad_id = self.vocab.get_id(self.vocab.pad_token)
+        max_blue = 0
+        max_rougeL = 0
+        for epoch in range(1, epochs + 1):
+            self.logger.info('Training the model for epoch {}'.format(epoch))
+            batch_datas = data.get_batches('train', self.batch_size, pad_id, shuffle=True)
+            train_loss = self.train_one_epoch(batch_datas, dropout_keep_prob)
+            self.loger.info('Average train loss for epoch {} is {}'.format(epoch, train_loss))
 
     def save(self, model_dir, model_prefix):
         self.saver.save(self.sess, os.path.join(model_dir, model_prefix))
