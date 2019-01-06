@@ -15,7 +15,6 @@ import logging
 from dataset import Dataset
 from vocab import Vocab
 from model import BiDAFModel
-#from rc_model_multi_gpu import RCModel_ngpus
 import jieba
 import numpy as np
 import tensorflow as tf
@@ -43,13 +42,13 @@ def parse_args():
     parser.add_argument('--use_embe', type=int, default=1, help='is use embeddings vector file')
 
     train_settings = parser.add_argument_group('train settings')
-    train_settings.add_argument('--learning_rate', type=float, default=0.001,
+    train_settings.add_argument('--learning_rate', type=float, default=0.0001,
                                 help='learning rate')
     train_settings.add_argument('--weight_decay', type=float, default=0,
                                 help='weight decay')
-    train_settings.add_argument('--dropout_keep_prob', type=float, default=0.1,
+    train_settings.add_argument('--dropout_keep_prob', type=float, default=0.5,
                                 help='dropout keep rate')
-    train_settings.add_argument('--batch_size', type=int, default=128,
+    train_settings.add_argument('--batch_size', type=int, default=4,
                                 help='train batch size')
     train_settings.add_argument('--epochs', type=int, default=50,
                                 help='train epochs')
@@ -69,11 +68,11 @@ def parse_args():
                                 help='the number of gpu')
 
     path_settings = parser.add_argument_group('path settings')
-    path_settings.add_argument('--train_files', default='./data/train',
+    path_settings.add_argument('--train_files', default='/home/dmyan/home/BIDAF/data/debug/train',
                                help='the file of train data')
-    path_settings.add_argument('--dev_files', default='./data/dev',
+    path_settings.add_argument('--dev_files', default='/home/dmyan/home/BIDAF/data/debug/dev',
                                help='the file of dev data')
-    path_settings.add_argument('--test_files', default='./data/test',
+    path_settings.add_argument('--test_files', default='/home/dmyan/home/BIDAF/data/debug/test',
                                help='the file of test data')
     path_settings.add_argument('--vocab_dir', default='./data/vocab/',
                                help='the dir to save vocabulary')
@@ -111,7 +110,7 @@ def prepare(args):
                                                                             vocab.size()))
     logger.info('Assigning embeddings...')
     if args.use_embe:
-        vocab.load_pretrained_embeddings(embedding_path='./data/word2vec/300_ver_not_pure.bin')
+        vocab.load_pretrained_embeddings(embedding_path='/home/dmyan/home/tensorflow/data/word2vec/300_ver_not_pure.bin')
     else:
         vocab.random_init_embeddings(args.embed_size)
 
@@ -131,18 +130,17 @@ def train(args):
     with open(os.path.join(args.vocab_dir, 'vocab.data'), 'rb') as fin:
         vocab = pickle.load(fin)
 
-    brc_data = Dataset( args.max_p_len, args.max_q_len,
-                          args.train_files, args.dev_files)
+    data = Dataset(train_files=args.train_files, dev_files=args.dev_files, max_p_length=args.max_p_len, max_q_length=args.max_q_len)
     logger.info('Converting text into ids...')
-    brc_data.convert_to_ids(vocab)
+    data.convert_to_ids(vocab)
     logger.info('Initialize the model...')
-    rc_model = BiDAFModel(vocab, args)
-    rc_model.restore(model_dir=args.model_dir, model_prefix=args.algo)
-    logger.info("Load dev dataset...")
-    rc_model.dev_content_answer(args.dev_files)
+    model = BiDAFModel(vocab, args)
+    #model.restore(model_dir=args.model_dir, model_prefix=args.algo)
+    #logger.info("Load dev dataset...")
+    #rc_model.dev_content_answer(args.dev_files)
     logger.info('Training the model...')
-    rc_model.train(brc_data, args.epochs, args.batch_size, save_dir=args.model_dir,
-                   save_prefix=args.algo,
+    model.train(data, args.epochs, save_dir=args.model_dir,
+                   save_prefix="BIDAF",
                    dropout_keep_prob=args.dropout_keep_prob)
     logger.info('Done with model training!')
 

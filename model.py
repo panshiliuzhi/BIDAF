@@ -4,6 +4,10 @@ from layers.rnn import rnn
 from layers.attention import attention
 from layers.output_linear import linear
 import os
+import time
+import numpy as np
+
+
 class BiDAFModel(object):
     """
     implement the Network structure described in https://arxiv.org/abs/1611.01603
@@ -25,13 +29,14 @@ class BiDAFModel(object):
         self.sess = tf.Session(config=sess_config)
         self.bulid_graph()
         self.saver = tf.train.Saver()
-        self.sess.run(tf.global_variables_initializer)
+        self.sess.run(tf.global_variables_initializer())
 
     def bulid_graph(self):
         """
         build graph
         :return:
         """
+        start_time = time.time()
         self.placeholders()
         self.word_embedding()
         self.contextual_embedding()
@@ -39,6 +44,9 @@ class BiDAFModel(object):
         self.modeling()
         self.output()
         self.compute_loss()
+        self.logger.info("Time to build graph: {} s".format(time.time() - start_time))
+        param_num = sum([np.prod(self.sess.run(tf.shape(v))) for v in self.all_params])
+        self.logger.info("There are {} parameters in the model".format(param_num))
 
     def placeholders(self):
         """
@@ -73,9 +81,9 @@ class BiDAFModel(object):
         :return:
         """
         with tf.variable_scope('paragraph_encoding'):
-            self.h = rnn(self.x_embed, self.hidden_size, dropout_keep_prob=self.dropout_keep_prob)
+            self.h = rnn(self.x_embed, self.hidden_size, self.x_length)
         with tf.variable_scope('question_enconding'):
-            self.u = rnn(self.q_embed, self.hidden_size, dropout_keep_prob=self.dropout_keep_prob)
+            self.u = rnn(self.q_embed, self.hidden_size, self.q_length)
         if self.use_dropout:
             self.h = tf.nn.dropout(self.h, self.dropout_keep_prob)
             self.u = tf.nn.dropout(self.u, self.dropout_keep_prob)
@@ -91,20 +99,21 @@ class BiDAFModel(object):
             self.g = tf.nn.dropout(self.g, self.dropout_keep_prob)
 
     def modeling(self):
-        self.m = rnn(self.g, self.hidden_size, self.x_length, layer_num=2, dropout_keep_prob=self.dropout_keep_prob)
+        self.m = rnn(self.g, self.hidden_size, self.x_length, layer_num=2)
         if self.use_dropout:
             self.m = tf.nn.dropout(self.m, self.dropout_keep_prob)
 
     def output(self):
         self.p1 = linear(self.batch_size, self.hidden_size, self.g, self.m, '1')
-        m_ = rnn(self.m, self.hidden_size, self.x_length, dropout_keep_prob=self.dropout_keep_prob)
+        with tf.variable_scope("output_rnn"):
+            m_ = rnn(self.m, self.hidden_size, self.x_length)
         self.p2 = linear(self.batch_size, self.hidden_size, self.g, m_, '2')
 
     def compute_loss(self):
         def log_loss(probs, y):
             with tf.name_scope("log_loss"):
                 y = tf.one_hot(y, tf.shape(probs)[1], axis=1)
-                loss = - tf.reduce_sum(probs * tf.log(probs), 1)
+                loss = - tf.reduce_sum(y * tf.log(probs), 1)
                 return loss
         self.start_loss = log_loss(self.p1, self.start)
         self.end_loss = log_loss(self.p2, self.end)
@@ -125,7 +134,10 @@ class BiDAFModel(object):
                 self.end: batch['end'],
                 self.dropout_keep_prob: dropout_keep_prob
             }
-            _, loss = self.sess.run([self.train_op, self.loss], feed_dict=feed_dict)
+            _, loss, start, end = self.sess.run([self.train_op, self.loss, self.g, self.u], feed_dict=feed_dict)
+            print("start: ", start)
+            print("end: ", end)
+            print("loss:", loss)
             total_loss += loss
             total_num += 1
             n_batch_loss += loss
@@ -136,7 +148,7 @@ class BiDAFModel(object):
                 n_batch_loss = 0
         return 1.0*total_loss/total_num
 
-    def train(self, data, epochs, save_dir, save_prefix, dropout_keep_prob=1.0, evaluate=True):
+    def train(self, data, epochs, save_dir=None, save_prefix=None, dropout_keep_prob=1.0, evaluate=True):
         pad_id = self.vocab.get_id(self.vocab.pad_token)
         max_blue = 0
         max_rougeL = 0
@@ -144,7 +156,7 @@ class BiDAFModel(object):
             self.logger.info('Training the model for epoch {}'.format(epoch))
             batch_datas = data.get_batches('train', self.batch_size, pad_id, shuffle=True)
             train_loss = self.train_one_epoch(batch_datas, dropout_keep_prob)
-            self.loger.info('Average train loss for epoch {} is {}'.format(epoch, train_loss))
+            self.logger.info('Average train loss for epoch {} is {}'.format(epoch, train_loss))
 
     def save(self, model_dir, model_prefix):
         self.saver.save(self.sess, os.path.join(model_dir, model_prefix))

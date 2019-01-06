@@ -1,5 +1,7 @@
 import gzip
 import numpy as np
+
+
 class Vocab(object):
 
     def __init__(self):
@@ -67,7 +69,7 @@ class Vocab(object):
         self.add(self.unk_token, cnt=0)
         for token in filtered_tokens:
             self.add(token, cnt=0)
-        self.embeddings = np.zeros(self.size(), self.embed_dim)
+        self.embeddings = np.zeros((self.size(), self.embed_dim))
         for token in self.token2id.keys():
             if token in trained_embeddings:
                 self.embeddings[self.get_id(token)] = trained_embeddings[token]
