@@ -1,12 +1,12 @@
 import tensorflow as tf
+import tensorflow.contrib as tc
 
-
-def linear(batch_size, hidden_size, g, m, position):
+def linear( hidden_size, g, m, position):
     with tf.variable_scope("output_layer"):
         w_p = tf.get_variable(
-            "wp"+position, shape=(batch_size, hidden_size*10, 1),
-            initializer=tf.truncated_normal_initializer(mean=0.0, stddev=1.0),
+            "wp"+position, shape=(1, hidden_size*10),
+            initializer=tf.contrib.layers.xavier_initializer(),
             trainable=True
         )
-        p = tf.nn.softmax(tf.squeeze(tf.matmul(tf.concat([g, m], -1), w_p),[-1]), -1)
+        p = tf.nn.softmax(tf.reduce_sum(tf.concat([g, m], -1) * w_p, -1), -1)
         return p
