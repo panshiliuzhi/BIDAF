@@ -9,8 +9,6 @@ def attention(hidden_size, h, u):
     :return:
     """
     with tf.variable_scope('attention_flow'):
-        T = tf.shape(h)[1]
-        J = tf.shape(u)[1]
 
         # method one
         # h_aug = tf.tile(tf.expand_dims(h, 2), [1, 1, J, 1])

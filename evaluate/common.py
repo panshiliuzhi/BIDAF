@@ -40,7 +40,7 @@ def word2char(str_in):
 
 if __name__ == '__main__':
     cand = '我是中国人'
-    ref = '我是孙维松'
+    ref = '我是美国人'
     cand_ngram = get_ngram(cand, 0)
     ref_ngram = get_ngram(ref, 0)
     print('cand_ngram: {}'.format(cand_ngram))
