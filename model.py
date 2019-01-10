@@ -6,6 +6,9 @@ from layers.output_linear import linear
 import os
 import time
 import numpy as np
+import math
+from evaluate.bleu import Bleu
+from evaluate.rouge import RougeL
 
 
 class BiDAFModel(object):
@@ -16,9 +19,10 @@ class BiDAFModel(object):
         self.logger = logging.getLogger("BiDAF")
         self.vocab = vocab
         self.hidden_size = args.hidden_size
-        self.batch_size = args.batch_size
         self.use_dropout = args.dropout_keep_prob < 1
         self.learning_rate = args.learning_rate
+        self.ref_answers = []
+        self.ref_contents = []
 
         self.max_p_length = args.max_p_len
         self.max_q_length = args.max_q_len
@@ -94,7 +98,7 @@ class BiDAFModel(object):
         contains Context-to-query Attention and Query-to-context Attention
         :return:
         """
-        self.g = attention(self.batch_size, self.hidden_size, self.h, self.u)
+        self.g = attention(self.hidden_size, self.h, self.u)
         if self.use_dropout:
             self.g = tf.nn.dropout(self.g, self.dropout_keep_prob)
 
@@ -149,15 +153,107 @@ class BiDAFModel(object):
                 n_batch_loss = 0
         return 1.0*total_loss/total_num
 
-    def train(self, data, epochs, save_dir=None, save_prefix=None, dropout_keep_prob=1.0, evaluate=True):
+    def train(self, data, epochs, batch_size, save_dir=None, save_prefix=None, dropout_keep_prob=1.0, evaluate=True):
         pad_id = self.vocab.get_id(self.vocab.pad_token)
-        max_blue = 0
         max_rougeL = 0
         for epoch in range(1, epochs + 1):
             self.logger.info('Training the model for epoch {}'.format(epoch))
-            batch_datas = data.get_batches('train', self.batch_size, pad_id, shuffle=True)
+            batch_datas = data.get_batches('train', batch_size, pad_id, shuffle=True)
             train_loss = self.train_one_epoch(batch_datas, dropout_keep_prob)
             self.logger.info('Average train loss for epoch {} is {}'.format(epoch, train_loss))
+
+            if evaluate:
+                self.logger.info('Evaluating the model after epoch {}'.format(epoch))
+                if data.dev_set is not None:
+                    eval_batches = data.get_batches('dev', batch_size, pad_id, shuffle=False)
+                    eval_loss, bleu_rouge = self.evaluate(eval_batches)
+                    self.logger.info('Dev eval loss {}'.format(eval_loss))
+                    self.logger.info('Dev eval result: {}'.format(bleu_rouge))
+                    if math.isnan(bleu_rouge['Bleu-4']) or math.isnan(bleu_rouge['Rouge-l']):
+                        self.logger.info("Dev eval is nan!")
+                        continue
+                    if bleu_rouge['Rouge-l'] > max_rougeL:
+                        self.save(save_dir, save_prefix)
+                        max_rougeL = bleu_rouge['Rouge-l']
+                else:
+                    self.logger.warning('No dev set is loaded for evaluation in the dataset!')
+
+    def evaluate(self, eval_batches, result_dir=None, result_prefix=None):
+        """
+        Evaluates the model performance on eval_batches and results are saved if specified
+        Args:
+            eval_batches: iterable batch data
+            result_dir: directory to save predicted answers, answers will not be saved if None
+            result_prefix: prefix of the file for saving predicted answers,
+                           answers will not be saved if None
+            save_full_info: if True, the pred_answers will be added to raw sample and saved
+        """
+
+
+        total_loss, total_num = 0, 0
+        start_indices = []
+        end_indices = []
+        for b_itx, batch in enumerate(eval_batches):
+            feed_dict = {self.x: batch['content_ids'],
+                         self.q: batch['question_ids'],
+                         self.x_length: batch['content_length'],
+                         self.q_length: batch['question_length'],
+                         self.start: batch['start'],
+                         self.end: batch['end'],
+                         self.dropout_keep_prob: 1.0}
+            # print(feed_dict)
+            start_probs, end_probs, loss = self.sess.run([self.p1,
+                                                          self.p2, self.loss], feed_dict)
+            #print(len(start_probs))
+            start_probs = np.array(start_probs)
+            end_probs = np.array(end_probs)
+            total_loss += loss
+            total_num += 1
+            start_indices += np.argmax(start_probs,axis=1).tolist()
+            end_indices += np.argmax(end_probs,axis=1).tolist()
+            # print(len(start_indices))
+
+
+
+        rouge_eval = RougeL()
+        bleu_eval = Bleu()
+        pred_answers = []
+        if result_prefix is not None and result_dir is not None:
+            with open('./data/'+'.answer', 'r') as ref_answer_files:
+                for answer in ref_answer_files:
+                    self.ref_answers.append(''.join(answer.strip().split()))
+
+            with open('./data/'+'test.content', 'r') as ref_content_files:
+                for content in ref_content_files:
+                    self.ref_contents.append(content.strip().split())
+
+        for i in range(len(start_indices)):
+            start_idx = start_indices[i]
+            end_idx = end_indices[i]
+            if end_idx < start_idx:
+                end_idx = start_idx + self.max_a_length
+            end_idx = np.minimum(end_idx, start_idx+self.max_a_length)
+            pred_answer = ''.join(self.ref_contents[i][start_idx:end_idx+1])
+            if result_prefix is not None and result_dir is not None:
+                pred_answers.append(pred_answer)
+
+            rouge_eval.add_inst(pred_answer, self.ref_answers[i])
+            bleu_eval.add_inst(pred_answer, self.ref_answers[i])
+
+        bleu_score = bleu_eval.get_score()
+        rouge_score = rouge_eval.get_score()
+
+        bleu_rouge = {'Bleu-4':bleu_score,'Rouge-l':rouge_score}
+        ave_loss = 1.0 * total_loss / total_num
+
+        if result_prefix is  not None and  result_dir is not None:
+            self.logger.info('Test Bleu-4 :{}'.format(bleu_score))
+            self.logger.info('Test Rouge-l : {}'.format(rouge_score))
+            result_file = os.path.join(result_dir, result_prefix + '.txt')
+            with open(result_file, 'w') as fout:
+                    fout.write('\n'.join(pred_answers))
+
+        return ave_loss, bleu_rouge
 
     def save(self, model_dir, model_prefix):
         self.saver.save(self.sess, os.path.join(model_dir, model_prefix))
@@ -166,6 +262,17 @@ class BiDAFModel(object):
     def restore(self,model_dir, model_prefix):
         self.saver.restore(self.sess, os.path.join(model_dir, model_prefix))
         self.logger.info("Model restore from {}, with prefix.".format(model_dir, model_prefix))
+
+    def dev_content_answer(self, data_path):
+        with open(data_path+".content", "r") as ref_content_files:
+            for content in ref_content_files:
+                self.ref_contents.append(content.strip().split())
+        with open(data_path+".answer", "r") as ref_answer_files:
+            for answer in ref_answer_files:
+                self.ref_answers.append(''.join(answer.strip().split()))
+
+
+
 
 
 

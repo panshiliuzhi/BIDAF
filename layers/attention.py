@@ -1,7 +1,7 @@
 import tensorflow as tf
 
 
-def attention(batch_size,hidden_size, h, u):
+def attention(hidden_size, h, u):
     """
 
     :param h: passae_encodes

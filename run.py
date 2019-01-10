@@ -18,6 +18,7 @@ from model import BiDAFModel
 import jieba
 import numpy as np
 import tensorflow as tf
+from model_multi_gpu import training
 
 
 def parse_args():
@@ -37,7 +38,7 @@ def parse_args():
                         help='evaluate the model on dev set')
     parser.add_argument('--predict', action='store_true',
                         help='predict the answers for test set with trained model')
-    parser.add_argument('--gpu', type=str, default='1',
+    parser.add_argument('--gpu', type=str, default='0, 1, 2',
                         help='specify gpu device')
     parser.add_argument('--use_embe', type=int, default=1, help='is use embeddings vector file')
 
@@ -48,7 +49,7 @@ def parse_args():
                                 help='weight decay')
     train_settings.add_argument('--dropout_keep_prob', type=float, default=0.2,
                                 help='dropout keep rate')
-    train_settings.add_argument('--batch_size', type=int, default=128,
+    train_settings.add_argument('--batch_size', type=int, default=64,
                                 help='train batch size')
     train_settings.add_argument('--epochs', type=int, default=50,
                                 help='train epochs')
@@ -64,7 +65,7 @@ def parse_args():
                                 help='max length of question')
     model_settings.add_argument('--max_a_len', type=int, default=40,
                                 help='max length of answer')
-    model_settings.add_argument('--n_gpus', type=int, default=1,
+    model_settings.add_argument('--n_gpus', type=int, default=3,
                                 help='the number of gpu')
 
     path_settings = parser.add_argument_group('path settings')
@@ -136,103 +137,33 @@ def train(args):
     logger.info('Initialize the model...')
     model = BiDAFModel(vocab, args)
     #model.restore(model_dir=args.model_dir, model_prefix=args.algo)
-    #logger.info("Load dev dataset...")
-    #rc_model.dev_content_answer(args.dev_files)
+    logger.info("Load dev dataset...")
+    model.dev_content_answer(args.dev_files)
     logger.info('Training the model...')
-    model.train(data, args.epochs, save_dir=args.model_dir,
+    model.train(data, args.epochs, args.batch_size, save_dir=args.model_dir,
                    save_prefix="BIDAF",
                    dropout_keep_prob=args.dropout_keep_prob)
     logger.info('Done with model training!')
 
 
-# def multi_gpu_train(args):
-#     """
-#     multi gpus train the reading comprehension model
-#     """
-#     logger = logging.getLogger("mc")
-#     logger.info('Load data_set and vocab...')
-#     with open(os.path.join(args.vocab_dir, 'vocab.data'), 'rb') as fin:
-#         vocab = pickle.load(fin)
-#
-#     brc_data = BRCDataset( args.max_p_len, args.max_q_len,
-#                           args.train_files, args.dev_files)
-#     logger.info('Converting text into ids...')
-#     brc_data.convert_to_ids(vocab)
-#     logger.info('Initialize the model...')
-#     gpu_avaiables = [0, 2]
-#     batch_size = args.batch_size
-#     with tf.device("/cpu:0"):
-#         tower_grads = []
-#         p = tf.placeholder(tf.int32, [None, None])
-#         q = tf.placeholder(tf.int32, [None, None])
-#         p_length = tf.placeholder(tf.int32, [None])
-#         q_length = tf.placeholder(tf.int32, [None])
-#         start_label = tf.placeholder(tf.int32, [None])
-#         end_label = tf.placeholder(tf.int32, [None])
-#         dropout_keep_prob = tf.placeholder(tf.float32)
-#         with tf.variable_scope('word_embedding'):
-#             word_embeddings = tf.get_variable(
-#                 'word_embeddings',
-#                 shape=(vocab.size(), vocab.embed_dim),
-#                 initializer=tf.constant_initializer(vocab.embeddings),
-#                 trainable=True
-#             )
-#             p_emb = tf.nn.embedding_lookup(word_embeddings, p)
-#             q_emb = tf.nn.embedding_lookup(word_embeddings, q)
-#         opt = tf.train.AdadeltaOptimizer(args.learning_rate)
-#         sess_config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=True)
-#         sess_config.gpu_options.allow_growth = True
-#
-#         #sess = tf.Session(config=sess_config)
-#         with tf.Session(config=sess_config) as sess:
-#             with tf.variable_scope(tf.get_variable_scope()):
-#                 for i in range(args.n_gpus):
-#                     with tf.device("/gpu:%d" % gpu_avaiables[i]):
-#                         with tf.name_scope("tower_%d" % gpu_avaiables[i]):
-#                             _p = p[i * batch_size:(i + 1) * batch_size]
-#                             _q = q[i * batch_size:(i + 1) * batch_size]
-#                             _p_length = p_length[i * batch_size:(i + 1) * batch_size]
-#                             _q_length = q_length[i * batch_size:(i + 1) * batch_size]
-#
-#                             _start_label = start_label[i * batch_size:(i + 1) * batch_size]
-#                             _end_label = end_label[i * batch_size:(i + 1) * batch_size]
-#                             _p_emb = p_emb[i * batch_size:(i + 1) * batch_size]
-#                             _q_emb = q_emb[i * batch_size:(i + 1) * batch_size]
-#                             data = (_p, _q, _p_length, _q_length, _start_label, _end_label, _p_emb, _q_emb, dropout_keep_prob)
-#                             model = RCModel_ngpus(args, data)
-#                             tf.get_variable_scope().reuse_variables()
-#                             model_loss = model.loss
-#                             grads = opt.compute_gradients(model_loss)
-#                             tower_grads.append(grads)
-#             grads = average_gradients(tower_grads)
-#             train_op =  opt.apply_gradients(grads)
-#
-#             sess.run(tf.global_variables_initializer())
-#             pad_id = vocab.get_id(vocab.pad_token)
-#             for epoch in range(1, args.epochs+1):
-#                 train_batches = brc_data.gen_mini_batches('train', batch_size*args.n_gpus, pad_id, shuffle=True)
-#                 total_num, total_loss = 0, 0
-#                 log_every_n_batch, n_batch_loss = 50, 0
-#
-#                 for bitx, batch in enumerate(train_batches, 1):
-#                     feed_dict = {p: batch['content_ids'],
-#                                  q: batch['question_ids'],
-#                                  p_length: batch['content_length'],
-#                                  q_length: batch['question_length'],
-#                                  start_label: batch['start_id'],
-#                                  end_label: batch['end_id'],
-#                                  dropout_keep_prob: dropout_keep_prob}
-#                     _, loss = sess.run([train_op, model_loss], feed_dict)
-#
-#                     total_loss += loss
-#                     total_num += 1
-#                     n_batch_loss += loss
-#                     if log_every_n_batch > 0 and bitx % log_every_n_batch == 0:
-#                         logger.info('Average loss from batch {} to {} is {}'.format(
-#                             bitx - log_every_n_batch + 1, bitx, n_batch_loss / log_every_n_batch))
-#                         n_batch_loss = 0
-#                 train_loss = 1.0 * total_loss / total_num
-#                 logger.info('Average train loss for epoch {} is {}'.format(epoch, train_loss))
+def multi_gpu_train(args):
+    """
+    multi gpus train the reading comprehension model
+    """
+    logger = logging.getLogger("BiDAF")
+    logger.info('Load data_set and vocab...')
+    with open(os.path.join(args.vocab_dir, 'vocab.data'), 'rb') as fin:
+        vocab = pickle.load(fin)
+
+    data = Dataset(train_files=args.train_files, dev_files=args.dev_files, max_p_length=args.max_p_len,
+                   max_q_length=args.max_q_len)
+    logger.info('Converting text into ids...')
+    data.convert_to_ids(vocab)
+    training(args, data, vocab)
+
+
+
+
 
 def evaluate(args):
     """
@@ -251,7 +182,7 @@ def evaluate(args):
 
     rc_model.restore(model_dir=args.model_dir, model_prefix=args.algo)
     logger.info('Evaluating the model on dev set...')
-    dev_batches = brc_data.gen_mini_batches('dev', args.batch_size,
+    dev_batches = brc_data.get_batches('dev', args.batch_size,
                                             pad_id=vocab.get_id(vocab.pad_token), shuffle=False)
     dev_loss, dev_bleu_rouge = rc_model.evaluate(
         dev_batches, result_dir=args.result_dir, result_prefix='dev.predicted')
@@ -358,6 +289,8 @@ def run():
         evaluate(args)
     if args.predict:
         predict(args)
+    if args.multi_gpu_train:
+        multi_gpu_train(args)
     if args.interactive:
         interactive(args)
 
