@@ -61,8 +61,8 @@ class Dataset(object):
             if dataset is None:
                 continue
             for sample in dataset:
-                sample['content'] = vocab.convert_to_ids(sample['content']).tolist()
-                sample['question'] = vocab.convert_to_ids(sample['question']).tolist()
+                sample['content'] = vocab.convert_to_ids(sample['content'])
+                sample['question'] = vocab.convert_to_ids(sample['question'])
 
     def one_batch(self, data, indices, pad_id):
         batch_data= {

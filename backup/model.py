@@ -1,7 +1,7 @@
 import logging
 import tensorflow as tf
 from layers.rnn import rnn
-from layers.attention import content_attention
+from layers.attention import attention
 from layers.output_linear import linear
 import os
 import time
@@ -9,26 +9,15 @@ import numpy as np
 import math
 from evaluate.bleu import Bleu
 from evaluate.rouge import RougeL
-from bilm import TokenBatcher, BidirectionalLanguageModel, weight_layers, \
-    dump_token_embeddings
 
 
 class BiDAFModel(object):
     """
     implement the Network structure described in https://arxiv.org/abs/1611.01603
     """
-    def __init__(self, args):
+    def __init__(self, vocab, args):
         self.logger = logging.getLogger("BiDAF")
-        #self.vocab = vocab
-
-        # elmo
-        data_dir = '/home/home1/dmyan/codes/bilm-tf/bilm/data/models/'
-        #vocab_file = data_dir + 'vocab.txt'
-        self.options_file = data_dir + 'options.json'
-        self.weight_file = data_dir + 'weights.hdf5'
-        self.token_embedding_file = data_dir + 'vocab_embedding.hdf5'
-
-
+        self.vocab = vocab
         self.hidden_size = args.hidden_size
         self.use_dropout = args.dropout_keep_prob < 1
         self.learning_rate = args.learning_rate
@@ -81,33 +70,14 @@ class BiDAFModel(object):
         word embeddings
         :return:
         """
-        # elmo
-        bilm = BidirectionalLanguageModel(
-            self.options_file,
-            self.weight_file,
-            use_character_inputs=False,
-            embedding_weight_file=self.token_embedding_file
-        )
-        context_embeddings_op = bilm(self.x)
-        question_embeddings_op = bilm(self.q)
-
-        elmo_context_input = weight_layers('input', context_embeddings_op, l2_coef=0.0)
-        with tf.variable_scope('', reuse=True):
-            # the reuse=True scope reuses weights from the context for the question
-            elmo_question_input = weight_layers(
-                'input', question_embeddings_op, l2_coef=0.0
+        with tf.device('/cpu:0'), tf.variable_scope('word_embedding'):
+            self.word_embeddings = tf.get_variable(
+                "word_embeddings", shape=(self.vocab.size(), self.vocab.embed_dim),
+                initializer=tf.constant_initializer(self.vocab.embeddings),
+                trainable=True
             )
-        self.x_embed, self.q_embed= elmo_context_input['weighted_op'], elmo_question_input['weighted_op']
-
-
-        # with tf.device('/cpu:0'), tf.variable_scope('word_embedding'):
-        #     self.word_embeddings = tf.get_variable(
-        #         "word_embeddings", shape=(self.vocab.size(), self.vocab.embed_dim),
-        #         initializer=tf.constant_initializer(self.vocab.embeddings),
-        #         trainable=True
-        #     )
-        #     self.x_embed = tf.nn.embedding_lookup(self.word_embeddings, self.x)
-        #     self.q_embed = tf.nn.embedding_lookup(self.word_embeddings, self.q)
+            self.x_embed = tf.nn.embedding_lookup(self.word_embeddings, self.x)
+            self.q_embed = tf.nn.embedding_lookup(self.word_embeddings, self.q)
 
     def contextual_embedding(self):
         """
@@ -115,9 +85,9 @@ class BiDAFModel(object):
         :return:
         """
         with tf.variable_scope('paragraph_encoding'):
-            self.h = rnn('lstm', self.x_embed, self.hidden_size, self.x_length)
+            self.h = rnn(self.x_embed, self.hidden_size, self.x_length)
         with tf.variable_scope('question_enconding'):
-            self.u = rnn('lstm', self.q_embed, self.hidden_size, self.q_length)
+            self.u = rnn(self.q_embed, self.hidden_size, self.q_length)
         if self.use_dropout:
             self.h = tf.nn.dropout(self.h, self.dropout_keep_prob)
             self.u = tf.nn.dropout(self.u, self.dropout_keep_prob)
@@ -128,20 +98,20 @@ class BiDAFModel(object):
         contains Context-to-query Attention and Query-to-context Attention
         :return:
         """
-        self.g = content_attention(self.hidden_size, self.h, self.u)
+        self.g = attention(self.hidden_size, self.h, self.u)
         if self.use_dropout:
             self.g = tf.nn.dropout(self.g, self.dropout_keep_prob)
 
     def modeling(self):
         with tf.variable_scope("modeling"):
-            self.m = rnn('lstm', self.g, self.hidden_size, self.x_length, layer_num=1)
+            self.m = rnn(self.g, self.hidden_size, self.x_length, layer_num=1)
         if self.use_dropout:
             self.m = tf.nn.dropout(self.m, self.dropout_keep_prob)
 
     def output(self):
         self.p1 = linear(self.hidden_size, self.g, self.m, '1')
         with tf.variable_scope("output_rnn"):
-            m_ = rnn('lstm', self.m, self.hidden_size, self.x_length, layer_num=1)
+            m_ = rnn(self.m, self.hidden_size, self.x_length, layer_num=1)
         self.p2 = linear(self.hidden_size, self.g, m_, '2')
 
     def compute_loss(self):
@@ -184,7 +154,7 @@ class BiDAFModel(object):
         return 1.0*total_loss/total_num
 
     def train(self, data, epochs, batch_size, save_dir=None, save_prefix=None, dropout_keep_prob=1.0, evaluate=True):
-        pad_id = 0
+        pad_id = self.vocab.get_id(self.vocab.pad_token)
         max_rougeL = 0
         for epoch in range(1, epochs + 1):
             self.logger.info('Training the model for epoch {}'.format(epoch))
@@ -207,6 +177,7 @@ class BiDAFModel(object):
                         max_rougeL = bleu_rouge['Rouge-l']
                 else:
                     self.logger.warning('No dev set is loaded for evaluation in the dataset!')
+
 
     def evaluate(self, eval_batches, result_dir=None, result_prefix=None):
         """
@@ -258,12 +229,13 @@ class BiDAFModel(object):
         for i in range(len(start_indices)):
             start_idx = start_indices[i]
             end_idx = end_indices[i]
+            if result_prefix is not None and result_dir is not None:
+                pred_answers.append(str(start_idx)+" "+str(end_idx))
             if end_idx < start_idx:
                 end_idx = start_idx + self.max_a_length
             end_idx = np.minimum(end_idx, start_idx+self.max_a_length)
             pred_answer = ''.join(self.ref_contents[i][start_idx:end_idx+1])
-            if result_prefix is not None and result_dir is not None:
-                pred_answers.append(pred_answer)
+
 
             rouge_eval.add_inst(pred_answer, self.ref_answers[i])
             bleu_eval.add_inst(pred_answer, self.ref_answers[i])
@@ -298,9 +270,6 @@ class BiDAFModel(object):
         with open(data_path+".answer", "r") as ref_answer_files:
             for answer in ref_answer_files:
                 self.ref_answers.append(''.join(answer.strip().split()))
-
-
-
 
 
 

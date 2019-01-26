@@ -19,7 +19,6 @@ import jieba
 import numpy as np
 import tensorflow as tf
 from model_multi_gpu import training
-from bilm import TokenBatcher
 
 
 def parse_args():
@@ -50,13 +49,13 @@ def parse_args():
                                 help='weight decay')
     train_settings.add_argument('--dropout_keep_prob', type=float, default=0.2,
                                 help='dropout keep rate')
-    train_settings.add_argument('--batch_size', type=int, default=64,
+    train_settings.add_argument('--batch_size', type=int, default=100,
                                 help='train batch size')
     train_settings.add_argument('--epochs', type=int, default=50,
                                 help='train epochs')
 
     model_settings = parser.add_argument_group('model settings')
-    model_settings.add_argument('--algo', type=str, default='BIDAF-elmo',
+    model_settings.add_argument('--algo', type=str, default='BIDAF',
                                 help='choose the prefix to save')
     model_settings.add_argument('--embed_size', type=int, default=300,
                                 help='size of the embeddings')
@@ -80,7 +79,7 @@ def parse_args():
                                help='the file of test data')
     path_settings.add_argument('--vocab_dir', default='./data/vocab/',
                                help='the dir to save vocabulary')
-    path_settings.add_argument('--model_dir', default='./data/models/elmo/',
+    path_settings.add_argument('--model_dir', default='./data/models/',
                                help='the dir to store models')
     path_settings.add_argument('--result_dir', default='./data/results/',
                                help='the dir to output the results')
@@ -131,19 +130,15 @@ def train(args):
     """
     logger = logging.getLogger("BiDAF")
     logger.info('Load data_set and vocab...')
-    # with open(os.path.join(args.vocab_dir, 'vocab.data'), 'rb') as fin:
-    #     vocab = pickle.load(fin)
-
-    data_dir = '/home/home1/dmyan/codes/bilm-tf/bilm/data/'
-    vocab_file = data_dir + 'vocab.txt'
-    batcher = TokenBatcher(vocab_file)
+    with open(os.path.join(args.vocab_dir, 'vocab.data'), 'rb') as fin:
+        vocab = pickle.load(fin)
 
     data = Dataset(train_files=args.train_files, dev_files=args.dev_files, max_p_length=args.max_p_len, max_q_length=args.max_q_len)
     logger.info('Converting text into ids...')
-    data.convert_to_ids(batcher)
+    data.convert_to_ids(vocab)
     logger.info('Initialize the model...')
-    model = BiDAFModel(args)
-    #model.restore(model_dir=args.model_dir, model_prefix=args.algo)
+    model = BiDAFModel(vocab, args)
+    model.restore(model_dir=args.model_dir, model_prefix=args.algo)
     logger.info("Load dev dataset...")
     model.dev_content_answer(args.dev_files)
     logger.info('Training the model...')
@@ -248,18 +243,17 @@ def predict(args):
     logger.info('Load data_set and vocab...')
     with open(os.path.join(args.vocab_dir, 'vocab.data'), 'rb') as fin:
         vocab = pickle.load(fin)
-    assert len(args.test_files) > 0, 'No test files are provided.'
-    brc_data = Dataset( args.max_p_len, args.max_q_len,
-                          test_files=args.test_files)
+    data = Dataset(test_files=args.dev_files, max_p_length=args.max_p_len,
+                   max_q_length=args.max_q_len)
     logger.info('Converting text into ids...')
-    brc_data.convert_to_ids(vocab)
+    data.convert_to_ids(vocab)
     logger.info('Restoring the model...')
-    rc_model = BiDAFModel(vocab, args)
-    rc_model.restore(model_dir=args.model_dir, model_prefix=args.algo)
+    model = BiDAFModel(vocab, args)
+    model.restore(model_dir=args.model_dir, model_prefix=args.algo)
     logger.info('Predicting answers for test set...')
-    test_batches = brc_data.gen_mini_batches('test', args.batch_size,
+    test_batches = data.get_batches('test', args.batch_size,
                                              pad_id=vocab.get_id(vocab.pad_token), shuffle=False)
-    rc_model.evaluate(test_batches,
+    model.evaluate(test_batches,
                       result_dir=args.result_dir, result_prefix='test.predicted')
 
 

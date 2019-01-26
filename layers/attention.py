@@ -1,7 +1,7 @@
 import tensorflow as tf
 
 
-def attention(hidden_size, h, u):
+def content_attention(hidden_size, h, u):
     """
 
     :param h: passae_encodes
@@ -35,6 +35,9 @@ def attention(hidden_size, h, u):
         h_b = tf.tile(tf.matmul(b, h), [1, tf.shape(h)[1], 1])
         G = tf.concat([h, u_a, h * u_a, h * h_b], -1)
     return G
+
+def additive_attention():
+    pass
 
 
 
