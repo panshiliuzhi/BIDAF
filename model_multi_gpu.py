@@ -1,7 +1,7 @@
 import logging
 import tensorflow as tf
 from layers.rnn import rnn
-from layers.attention import attention
+from layers.attention import content_attention
 from layers.output_linear import linear
 import os
 import time
@@ -67,7 +67,7 @@ class BiDAFModel_ngpus(object):
         contains Context-to-query Attention and Query-to-context Attention
         :return:
         """
-        self.g = attention(self.hidden_size, self.h, self.u)
+        self.g = content_attention(self.hidden_size, self.h, self.u)
         if self.use_dropout:
             self.g = tf.nn.dropout(self.g, self.dropout_keep_prob)
 

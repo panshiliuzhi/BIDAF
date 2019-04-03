@@ -7,6 +7,7 @@ import math
 from evaluate.bleu import Bleu
 from evaluate.rouge import RougeL
 from layers.rnn import rnn, gatedAttentionGRU, get_attn_params
+from layers.rnn import linear
 from layers.output_linear import answer_pointer
 from bilm import  BidirectionalLanguageModel, weight_layers
 
@@ -42,7 +43,7 @@ class RNETModel(object):
         self.placeholders()
         self.word_embedding()
         self.encode()
-        self.gated_attention()
+        self.multiHead_attention()
         self.output_layer()
         self.compute_loss()
         self.logger.info("Time to build graph: {}s".format(time.time() - start_time))
@@ -75,8 +76,6 @@ class RNETModel(object):
                 'input', question_embeddings_op, l2_coef=0.0
             )
         self.p_embed, self.q_embed= elmo_context_input['weighted_op'], elmo_question_input['weighted_op']
-        #self.p_embed = layer_normalization(self.p_embed, num_units=300, scope="word_embedding")
-        #self.q_embed = layer_normalization(self.q_embed, num_units=300, scope="word_embedding", reuse=True)
 
     def encode(self):
         with tf.variable_scope("passage_encoding"):
@@ -86,47 +85,46 @@ class RNETModel(object):
         if self.use_dropout:
             self.u_p = tf.nn.dropout(self.u_p, self.dropout_keep_prob)
             self.u_q = tf.nn.dropout(self.u_q, self.dropout_keep_prob)
-        #self.u_p = layer_normalization(self.u_p, 2*self.hidden_size, scope="encode")
-        #self.u_q = layer_normalization(self.u_q, 2*self.hidden_size, scope="encode", reuse=True)
-    # def multiHead_attention(self):
+
+    def multiHead_attention(self):
+        params = [(([self.params["w_u_q"], self.params["w_u_p"], self.params["w_v_p"]], self.params["v"]),self.params["w_g"]),
+                  (([self.params["w_v_p_"], self.params["w_v_phat"]], self.params["v"]), self.params["w_g_"])]
+        head_output = []
+        with tf.variable_scope("multiHead_attention"):
+            for i in range(self.head_count):
+                q = linear(tf.reshape(self.u_q, (-1, 2*self.hidden_size)), 2*self.hidden_size, bias=False, scope='headq'+str(i))
+                p = linear(tf.reshape(self.u_p, (-1, 2*self.hidden_size)), 2*self.hidden_size, bias=False, scope='headp'+str(i))
+                q = tf.reshape(q, (self.batch_size, -1, 2*self.hidden_size))
+                p = tf.reshape(p, (self.batch_size, -1, 2*self.hidden_size))
+                with tf.variable_scope("head"+str(i)):
+                    head = gatedAttentionGRU(q, self.q_length, p, self.p_length, self.hidden_size, params[0], use_state=True, dropout_keep_prob=self.dropout_keep_prob)
+                head_output.append(head)
+            head_output = tf.concat(head_output, -1)
+            multi_head = linear(tf.reshape(head_output, (-1, self.head_count*2*self.hidden_size)), 2*self.hidden_size, False, scope='multi_head')
+            multi_head = tf.maximum(
+                             linear(multi_head, self.hidden_size*2, bias=True, bias_start=1.0, scope="transformer1"), 0)
+            multi_head = tf.nn.relu(linear(multi_head, self.hidden_size*2, bias=True, bias_start=1.0, scope="transformer2"))
+            self.v_p = self.u_p + tf.reshape(multi_head, (self.batch_size, -1, 2*self.hidden_size))
+        with tf.variable_scope("self_matching"):
+            self.h_p = self.v_p + gatedAttentionGRU(self.v_p, self.p_length, self.v_p, self.p_length, self.hidden_size, params[1], dropout_keep_prob=self.dropout_keep_prob)
+
+
+    # def gated_attention(self):
     #     params = [(([self.params["w_u_q"], self.params["w_u_p"], self.params["w_v_p"]], self.params["v"]),self.params["w_g"]),
     #               (([self.params["w_v_p_"], self.params["w_v_phat"]], self.params["v"]), self.params["w_g_"])]
-    #     head_output = []
-    #     with tf.variable_scope("multiHead_attention"):
-    #         for i in range(self.head_count):
-    #             q = linear(tf.reshape(self.u_q, (-1, 2*self.hidden_size)), 2*self.hidden_size, bias=False, scope='headq'+str(i))
-    #             p = linear(tf.reshape(self.u_p, (-1, 2*self.hidden_size)), 2*self.hidden_size, bias=False, scope='headp'+str(i))
-    #             q = tf.reshape(q, (self.batch_size, -1, 2*self.hidden_size))
-    #             p = tf.reshape(p, (self.batch_size, -1, 2*self.hidden_size))
-    #             with tf.variable_scope("head"+str(i)):
-    #                 head = gatedAttentionGRU(q, self.q_length, p, self.p_length, self.hidden_size, params[0], use_state=True, dropout_keep_prob=self.dropout_keep_prob)
-    #             head_output.append(head)
-    #         head_output = tf.concat(head_output, -1)
-    #         multi_head = linear(tf.reshape(head_output, (-1, self.head_count*2*self.hidden_size)), 2*self.hidden_size, False, scope='multi_head')
-    #         multi_head = tf.maximum(
-    #                          linear(multi_head, self.hidden_size*2, bias=True, bias_start=1.0, scope="transformer1"), 0)
-    #         multi_head = tf.nn.relu(linear(multi_head, self.hidden_size*2, bias=True, bias_start=1.0, scope="transformer2"))
-    #         self.v_p = self.u_p + tf.reshape(multi_head, (self.batch_size, -1, 2*self.hidden_size))
+    #     with tf.variable_scope("attention_pooling"):
+    #         self.v_p = self.u_p + gatedAttentionGRU(self.u_q, self.q_length, self.u_p, self.p_length, self.hidden_size, params[0], use_state=True, dropout_keep_prob=self.dropout_keep_prob)
+    #
     #     with tf.variable_scope("self_matching"):
     #         self.h_p = self.v_p + gatedAttentionGRU(self.v_p, self.p_length, self.v_p, self.p_length, self.hidden_size, params[1], dropout_keep_prob=self.dropout_keep_prob)
 
-
-    def gated_attention(self):
-        params = [(([self.params["w_u_q"], self.params["w_u_p"], self.params["w_v_p"]], self.params["v"]),self.params["w_g"]),
-                  (([self.params["w_v_p_"], self.params["w_v_phat"]], self.params["v"]), self.params["w_g_"])]
-        with tf.variable_scope("attention_pooling"):
-            self.v_p = self.u_p + gatedAttentionGRU(self.u_q, self.q_length, self.u_p, self.p_length, self.hidden_size, params[0], use_state=True, dropout_keep_prob=self.dropout_keep_prob)
-            #self.v_p = layer_normalization(self.v_p, num_units=self.hidden_size*2, scope="attention_pooling_norm") + self.u_p
-        with tf.variable_scope("self_matching"):
-            self.h_p = self.v_p + gatedAttentionGRU(self.v_p, self.p_length, self.v_p, self.p_length, self.hidden_size, params[1], dropout_keep_prob=self.dropout_keep_prob)
-            #self.h_p = layer_normalization(self.h_p, num_units=self.hidden_size * 2,scope="attention_pooling_norm") + self.v_p
     def output_layer(self):
         params = [
             ([self.params["w_h_p"], self.params["w_h_a"]], self.params["v"]),
             ([self.params["w_u_q_"], self.params["w_v_q"]], self.params["v"])
         ]
         with tf.variable_scope("output_layer"):
-            self.h_p = self.h_p + rnn("gru", self.h_p, self.hidden_size, self.p_length, dropout_keep_prob=self.dropout_keep_prob)
+            self.h_p = rnn("gru", self.h_p, self.hidden_size, self.p_length, dropout_keep_prob=self.dropout_keep_prob)
         self.p1, self.p2 = answer_pointer(self.h_p, self.p_length, self.u_q, self.q_length, self.hidden_size, params, self.batch_size)
     def compute_loss(self):
         def log_loss(probs, y, epsion=1e-9):
@@ -216,29 +214,27 @@ class RNETModel(object):
         rouge_eval = RougeL()
         blue_eval = Bleu()
         if result_dir is not None and result_prefix is not None:
-            with open("/home/home1/dmyan/codes/tensorflow/data/dev.answer", "r") as ref_answer_files:
+            with open("/home/home1/dmyan/codes/tensorflow/data/test.answer", "r") as ref_answer_files:
                 for answer in ref_answer_files:
                     self.ref_answers.append(''.join(answer.strip().split()))
-            with open("/home/home1/dmyan/codes/tensorflow/data/dev.content", "r") as ref_content_files:
+            with open("/home/home1/dmyan/codes/tensorflow/data/test.content", "r") as ref_content_files:
                 for content in ref_content_files:
                     self.ref_contents.append(content.strip().split())
         pred_answers = []
-        print(len(start_indices))
         for i, (start, end) in enumerate(zip(start_indices, end_indices)):
             end  = np.where(end<start, start+self.max_a_length, min(end, start+self.max_a_length))
             answer = ''.join(self.ref_contents[i][start:end+1])
             if result_prefix is not None and result_prefix is not None:
                 pred_answers.append(answer)
-            print(answer, self.ref_answers[i])
             rouge_eval.add_inst(answer, self.ref_answers[i])
             blue_eval.add_inst(answer, self.ref_answers[i])
         bleu_score = blue_eval.get_score()
-        prec, rec, rouge_score = rouge_eval.get_score()
+        rouge_score = rouge_eval.get_score()
         bleu_rouge = {'Bleu-4':bleu_score,'Rouge-l':rouge_score}
         ave_loss = 1.0 * total_loss / total_num
         if result_prefix is  not None and  result_dir is not None:
             self.logger.info('Test Bleu-4 :{}'.format(bleu_score))
-            self.logger.info('Test Precision, Recall, Rouge-l : {}, {}, {}'.format(prec, rec, rouge_score))
+            self.logger.info('Test Rouge-l : {}'.format(rouge_score))
             result_file = os.path.join(result_dir, result_prefix + '.txt')
             with open(result_file, 'w') as fout:
                     fout.write('\n'.join(pred_answers))
@@ -261,7 +257,7 @@ class RNETModel(object):
 
     def restore(self, model_dir, model_prefix):
         self.saver.restore(self.sess, os.path.join(model_dir, model_prefix))
-        self.logger.info("Model restore from {} with prefix {}".format(model_dir, model_prefix))
+        self.logger.info("Model restore from {} with prefix{}".format(model_dir, model_prefix))
 
 
 

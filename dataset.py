@@ -110,6 +110,9 @@ class Dataset(object):
         if shuffle:
             np.random.shuffle(indices)
         for start_index in np.arange(0, data_size, batch_size):
+            # if data_size - start_index < batch_size:
+            #     continue
             batch_indices = indices[start_index : start_index + batch_size]
+
             yield self.one_batch(data, batch_indices, pad_id)
 

@@ -15,18 +15,20 @@ import logging
 from dataset import Dataset
 from vocab import Vocab
 from model import BiDAFModel
+from RNETModel import RNETModel
+from QANet import QANetModel
 import jieba
 import numpy as np
 import tensorflow as tf
 from model_multi_gpu import training
 from bilm import TokenBatcher
 
-
+from layers.params import Params
 def parse_args():
     """
     Parses command line arguments.
     """
-    parser = argparse.ArgumentParser('Reading Comprehension on RC dataset')
+    parser = argparse.ArgumentParser('Reading Comprehension on Les MMRC dataset')
     parser.add_argument('--prepare', action='store_true',
                         help='create the directories, prepare the vocabulary and embeddings')
     parser.add_argument('--train', action='store_true',
@@ -39,7 +41,7 @@ def parse_args():
                         help='evaluate the model on dev set')
     parser.add_argument('--predict', action='store_true',
                         help='predict the answers for test set with trained model')
-    parser.add_argument('--gpu', type=str, default='0, 1, 2',
+    parser.add_argument('--gpu', type=str, default='1',
                         help='specify gpu device')
     parser.add_argument('--use_embe', type=int, default=1, help='is use embeddings vector file')
 
@@ -48,21 +50,24 @@ def parse_args():
                                 help='learning rate')
     train_settings.add_argument('--weight_decay', type=float, default=0,
                                 help='weight decay')
-    train_settings.add_argument('--dropout_keep_prob', type=float, default=0.2,
+    train_settings.add_argument('--dropout_keep_prob', type=float, default=0.8,
                                 help='dropout keep rate')
     train_settings.add_argument('--batch_size', type=int, default=64,
                                 help='train batch size')
-    train_settings.add_argument('--epochs', type=int, default=50,
+    train_settings.add_argument('--epochs', type=int, default=100,
                                 help='train epochs')
 
     model_settings = parser.add_argument_group('model settings')
-    model_settings.add_argument('--algo', type=str, default='BIDAF-elmo',
+
+    model_settings.add_argument('--algo', type=str, choices=["BIDAF-elmo", "R-net-elmo", "R-net-elmo-1", "QANet"], default='BIDAF-elmo',
                                 help='choose the prefix to save')
     model_settings.add_argument('--embed_size', type=int, default=300,
                                 help='size of the embeddings')
-    model_settings.add_argument('--hidden_size', type=int, default=150,
+    model_settings.add_argument('--hidden_size', type=int, default=75,
                                 help='size of LSTM hidden units')
-    model_settings.add_argument('--max_p_len', type=int, default=800,
+    model_settings.add_argument('--head_count', type=int, default=4,
+                                help='the number of attention head')
+    model_settings.add_argument('--max_p_len', type=int, default=400,
                                 help='max length of passage')
     model_settings.add_argument('--max_q_len', type=int, default=80,
                                 help='max length of question')
@@ -72,15 +77,15 @@ def parse_args():
                                 help='the number of gpu')
 
     path_settings = parser.add_argument_group('path settings')
-    path_settings.add_argument('--train_files', default='/home/home1/dmyan/codes/tensorflow/data/train',
+    path_settings.add_argument('--train_files', default='/home/home1/dmyan/codes/BIDAF/data/3/train',
                                help='the file of train data')
-    path_settings.add_argument('--dev_files', default='/home/home1/dmyan/codes/tensorflow/data/dev',
+    path_settings.add_argument('--dev_files', default='/home/home1/dmyan/codes/BIDAF/data/3/dev',
                                help='the file of dev data')
-    path_settings.add_argument('--test_files', default='/home/home1/dmyan/codes/tensorflow/data/test',
+    path_settings.add_argument('--test_files', default='/home/home1/dmyan/codes/BIDAF/data/3/test',
                                help='the file of test data')
     path_settings.add_argument('--vocab_dir', default='./data/vocab/',
                                help='the dir to save vocabulary')
-    path_settings.add_argument('--model_dir', default='./data/models/elmo/',
+    path_settings.add_argument('--model_dir', default='./data/models/',
                                help='the dir to store models')
     path_settings.add_argument('--result_dir', default='./data/results/',
                                help='the dir to output the results')
@@ -95,7 +100,7 @@ def prepare(args):
     """
     checks data, creates the directories, prepare the vocabulary and embeddings
     """
-    logger = logging.getLogger("BiDAF")
+    logger = logging.getLogger(args.algo)
     logger.info('Preparing the directories...')
     for dir_path in [args.vocab_dir, args.model_dir, args.result_dir, args.summary_dir]:
         if not os.path.exists(dir_path):
@@ -129,7 +134,7 @@ def train(args):
     """
     trains the reading comprehension model
     """
-    logger = logging.getLogger("BiDAF")
+    logger = logging.getLogger(args.algo)
     logger.info('Load data_set and vocab...')
     # with open(os.path.join(args.vocab_dir, 'vocab.data'), 'rb') as fin:
     #     vocab = pickle.load(fin)
@@ -142,12 +147,17 @@ def train(args):
     logger.info('Converting text into ids...')
     data.convert_to_ids(batcher)
     logger.info('Initialize the model...')
-    model = BiDAFModel(args)
+    if args.algo.startswith("BIDAF"):
+        model = BiDAFModel(args)
+    elif args.algo.startswith("R-net"):
+        model = RNETModel(args)
+    elif args.algo.startswith("QANET"):
+        model = QANetModel(args)
     #model.restore(model_dir=args.model_dir, model_prefix=args.algo)
     logger.info("Load dev dataset...")
     model.dev_content_answer(args.dev_files)
     logger.info('Training the model...')
-    model.train(data, args.epochs, args.batch_size, save_dir=args.model_dir,
+    model.train(data, args.epochs, args.batch_size, save_dir=args.model_dir+args.algo,
                    save_prefix=args.algo,
                    dropout_keep_prob=args.dropout_keep_prob)
     logger.info('Done with model training!')
@@ -176,26 +186,33 @@ def evaluate(args):
     """
     evaluate the trained model on dev files
     """
-    logger = logging.getLogger("BiDAF")
-    logger.info('Load data_set and vocab...')
-    with open(os.path.join(args.vocab_dir, 'vocab.data'), 'rb') as fin:
-        vocab = pickle.load(fin)
-    assert len(args.dev_files) > 0, 'No dev files are provided.'
-    brc_data = Dataset(args.max_p_num, args.max_p_len, args.max_q_len, dev_files=args.dev_files)
-    logger.info('Converting text into ids...')
-    brc_data.convert_to_ids(vocab)
-    logger.info('Restoring the model...')
-    rc_model = BiDAFModel(vocab, args)
 
-    rc_model.restore(model_dir=args.model_dir, model_prefix=args.algo)
-    logger.info('Evaluating the model on dev set...')
-    dev_batches = brc_data.get_batches('dev', args.batch_size,
-                                            pad_id=vocab.get_id(vocab.pad_token), shuffle=False)
-    dev_loss, dev_bleu_rouge = rc_model.evaluate(
-        dev_batches, result_dir=args.result_dir, result_prefix='dev.predicted')
-    logger.info('Loss on dev set: {}'.format(dev_loss))
-    logger.info('Result on dev set: {}'.format(dev_bleu_rouge))
-    logger.info('Predicted answers are saved to {}'.format(os.path.join(args.result_dir)))
+    logger = logging.getLogger(args.algo)
+    logger.info('Load data_set and vocab...')
+    # with open(os.path.join(args.vocab_dir, 'vocab.data'), 'rb') as fin:
+    #     vocab = pickle.load(fin)
+
+    data_dir = '/home/home1/dmyan/codes/bilm-tf/bilm/data/'
+    vocab_file = data_dir + 'vocab.txt'
+    batcher = TokenBatcher(vocab_file)
+
+    data = Dataset(test_files=args.test_files, max_p_length=args.max_p_len, max_q_length=args.max_q_len)
+    logger.info('Converting text into ids...')
+    data.convert_to_ids(batcher)
+    logger.info('Initialize the model...')
+    if args.algo.startswith("BIDAF"):
+        model = BiDAFModel(args)
+    elif args.algo.startswith("R-net"):
+        model = RNETModel(args)
+    model.restore(model_dir=args.model_dir+args.algo, model_prefix=args.algo)
+    #logger.info("Load dev dataset...")
+    #model.dev_content_answer(args.dev_files)
+    logger.info('Testing the model...')
+    eval_batches = data.get_batches("test", args.batch_size, 0, shuffle=False)
+    eval_loss, bleu_rouge = model.evaluate(eval_batches, result_dir=args.result_dir, result_prefix="test.predicted")
+    logger.info("Test loss {}".format(eval_loss))
+    logger.info("Test result: {}".format(bleu_rouge))
+    logger.info('Done with model Testing!')
 
 def interactive(args):
     logger = logging.getLogger("BiDAF")
@@ -269,7 +286,7 @@ def run():
     """
     args = parse_args()
 
-    logger = logging.getLogger("BiDAF")
+    logger = logging.getLogger(args.algo)
     logger.setLevel(logging.INFO)
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(message)s')
     if args.log_path:
@@ -287,6 +304,10 @@ def run():
 
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+
+    Params.hidden_size = args.hidden_size
+    Params.batch_size = args.batch_size
+    Params.max_q_len = args.max_q_len
 
     if args.prepare:
         prepare(args)
