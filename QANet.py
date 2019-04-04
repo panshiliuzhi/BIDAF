@@ -108,17 +108,23 @@ class QANetModel(object):
             self.p1 = linear(self.hidden_size*2, self.enc[1], self.enc[2], position="1")
             self.p2 = linear(self.hidden_size*2, self.enc[1], self.enc[3], position="2")
 
+
     def compute_loss(self):
         def log_loss(probs, y, epsion = 1e-9):
             with tf.name_scope("log_loss"):
                 y = tf.one_hot(y, tf.shape(probs)[1], axis=1)
                 loss = - tf.reduce_sum(y * tf.log(probs + epsion), 1)
                 return loss
-        self.start_loss = log_loss(self.p1, self.start)
-        self.end_loss = log_loss(self.p2, self.end)
+        start_loss = log_loss(self.p1, self.start)
+        end_loss = log_loss(self.p2, self.end)
         self.all_params = tf.trainable_variables()
-        self.loss = tf.reduce_mean(tf.add(self.start_loss, self.end_loss))
-        self.train_op = tf.train.AdamOptimizer(self.learning_rate).minimize(self.loss)
+        self.loss = tf.reduce_mean(tf.add(start_loss, end_loss))
+        optimizer = tf.train.AdamOptimizer(self.learning_rate)
+        grads_and_vars = optimizer.compute_gradients(self.loss, self.all_params)
+        for i, (g, v) in enumerate(grads_and_vars):
+            if g is not None:
+                grads_and_vars[i] = (tf.clip_by_norm(g, 10), v)
+        self.train_op = optimizer.apply_gradients(grads_and_vars)#tf.train.AdamOptimizer(self.learning_rate).minimize(self.loss)
 
 
     def train_one_epoch(self, batch_datas, dropout_keep_prob):
