@@ -20,7 +20,8 @@ implement Machine Reading Comprehension Model introduced by [Bi-directional Atte
 
 ### run.py文件说明
 
-主要是设置超参数以及加载数据集
+* 主要是设置超参数以及加载数据集
+
   [1]: https://arxiv.org/abs/1611.01603
   [2]: https://arxiv.org/pdf/1804.09541.pdf
   [3]: http://www.linzehui.me/2018/08/12/%E7%A2%8E%E7%89%87%E7%9F%A5%E8%AF%86/%E5%A6%82%E4%BD%95%E5%B0%86ELMo%E8%AF%8D%E5%90%91%E9%87%8F%E7%94%A8%E4%BA%8E%E4%B8%AD%E6%96%87/
