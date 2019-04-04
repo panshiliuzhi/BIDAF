@@ -253,14 +253,31 @@ class QANetModel(object):
         return ave_loss, bleu_rouge
 
     def save(self, model_dir, model_prefix):
+        """
+        保存模型参数
+        :param model_dir:
+        :param model_prefix:
+        :return:
+        """
         self.saver.save(self.sess, os.path.join(model_dir, model_prefix))
         self.logger.info("Model save in {}, with prefix {}.".format(model_dir, model_prefix))
 
     def restore(self, model_dir, model_prefix):
+        """
+        恢复模型参数
+        :param model_dir:
+        :param model_prefix:
+        :return:
+        """
         self.saver.restore(self.sess, os.path.join(model_dir, model_prefix))
         self.logger.info("Model restore from {}, with prefix {}.".format(model_dir, model_prefix))
 
     def dev_content_answer(self, data_path):
+        """
+        加载验证集
+        :param data_path:
+        :return:
+        """
         with open(data_path + ".content", "r") as ref_content_files:
             for content in ref_content_files:
                 self.ref_contents.append(content.strip().split())
